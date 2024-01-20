@@ -3,11 +3,20 @@ pragma solidity ^0.8.19;
 
 import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 
-error Tombola__NotEnoughETHEntered();
-error Tombola__TransferFailed();
+error Tombola__NotEnoughETHEntered(string message);
+error Tombola__TransferFailed(string message);
+error Tombola__Status(string message);
 
-contract Tombola is VRFConsumerBaseV2 {
+//error Tombola
+
+contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
+    //Type
+    enum TombolaStatus {
+        OPEN,
+        CLOSED
+    }
     //State variable
     uint256 private immutable i_entranceFee;
     address payable[] private s_players;
@@ -18,6 +27,7 @@ contract Tombola is VRFConsumerBaseV2 {
     uint32 private immutable i_callbackGasLimit;
     uint32 private constant NUMWORDS = 1;
     address payable public s_latestWinner;
+    TombolaStatus private s_tombolaStatus;
 
     //Events
     event RaffleEnter(address indexed player);
@@ -37,11 +47,15 @@ contract Tombola is VRFConsumerBaseV2 {
         i_gaslane = keyHash;
         i_subId = subscriptionId;
         i_callbackGasLimit = callbackGasLimit;
+        s_tombolaStatus = TombolaStatus.OPEN;
     }
 
     function payLottery() public payable {
         if (msg.value < i_entranceFee) {
-            revert Tombola__NotEnoughETHEntered();
+            revert Tombola__NotEnoughETHEntered("Insufficient payment for entrance fee");
+        }
+        if (s_tombolaStatus != TombolaStatus.OPEN) {
+            revert Tombola__Status("Please wait for the next round");
         }
         s_players.push(payable(msg.sender));
         emit RaffleEnter(msg.sender);
@@ -54,12 +68,34 @@ contract Tombola is VRFConsumerBaseV2 {
         uint256 indexOfWinner = randomWords[0] % s_players.length;
         address payable latestWinner = s_players[indexOfWinner];
         s_latestWinner = latestWinner;
+        s_tombolaStatus = TombolaStatus.OPEN;
+        s_players = new address payable[](0);
         bool sendSuccess = payable(latestWinner).send(address(this).balance);
-        if (!sendSuccess) revert Tombola__TransferFailed();
+        if (!sendSuccess) revert Tombola__TransferFailed("Transfer failed");
         emit winnerPicked(latestWinner);
     }
 
+    /**
+     * @dev This function is invoked by Chainlink Keeper nodes to determine if upkeep is needed, and it returns true when the following conditions are met:
+     *1. The subscription must be true.
+     *2. The specified time interval should have elapsed.
+     *3. There must be at least one player.
+     *4. There should be a non-zero amount of ETH.
+     *5. The lottery should be in ""Open" state.
+     */
+    function checkUpkeep(
+        bytes calldata /*checkData*/
+    ) external view override returns (bool upkeepNeeded, bytes memory performData) {
+        bool isOpen = (s_tombolaStatus == TombolaStatus.OPEN);
+        if (block.timestamp >= 24 hours) {
+            return (true, "Upkeep needed");
+        } else {
+            return (false, "No upkeep needed");
+        }
+    }
+
     function requestRandomWinner() external {
+        s_tombolaStatus = TombolaStatus.CLOSED;
         uint256 request_Id = i_vrfCoordinator.requestRandomWords(
             i_gaslane,
             i_subId,
