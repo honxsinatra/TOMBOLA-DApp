@@ -28,6 +28,8 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
     uint32 private constant NUMWORDS = 1;
     address payable public s_latestWinner;
     TombolaStatus private s_tombolaStatus;
+    uint256 private s_lastTimeStamp;
+    uint256 private immutable i_interval;
 
     //Events
     event RaffleEnter(address indexed player);
@@ -40,7 +42,8 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
         uint256 entranceFee,
         bytes32 keyHash,
         uint64 subscriptionId,
-        uint32 callbackGasLimit
+        uint32 callbackGasLimit,
+        uint256 interval
     ) VRFConsumerBaseV2(vrfCoordinatorV2) {
         i_entranceFee = entranceFee;
         i_vrfCoordinator = VRFCoordinatorV2Interface(vrfCoordinatorV2);
@@ -48,11 +51,15 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
         i_subId = subscriptionId;
         i_callbackGasLimit = callbackGasLimit;
         s_tombolaStatus = TombolaStatus.OPEN;
+        s_lastTimeStamp = block.timestamp;
+        i_interval = interval;
     }
 
     function payLottery() public payable {
         if (msg.value < i_entranceFee) {
-            revert Tombola__NotEnoughETHEntered("Insufficient payment for entrance fee");
+            revert Tombola__NotEnoughETHEntered(
+                "Insufficient payment for entrance fee"
+            );
         }
         if (s_tombolaStatus != TombolaStatus.OPEN) {
             revert Tombola__Status("Please wait for the next round");
@@ -85,13 +92,17 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
      */
     function checkUpkeep(
         bytes calldata /*checkData*/
-    ) external view override returns (bool upkeepNeeded, bytes memory performData) {
+    )
+        external
+        view
+        override
+        returns (bool upkeepNeeded, bytes memory performData)
+    {
         bool isOpen = (s_tombolaStatus == TombolaStatus.OPEN);
-        if (block.timestamp >= 24 hours) {
-            return (true, "Upkeep needed");
-        } else {
-            return (false, "No upkeep needed");
-        }
+        bool hasTimePassed = ((block.timestamp - s_lastTimeStamp) > i_interval);
+        bool hasPlayers = (s_players.length > 0);
+        bool hasBalance = (address(this).balance > 0);
+        upkeepNeeded = (isOpen && hasTimePassed && hasPlayers && hasBalance);
     }
 
     function requestRandomWinner() external {
