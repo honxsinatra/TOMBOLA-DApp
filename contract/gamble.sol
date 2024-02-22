@@ -5,12 +5,6 @@ import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
 import "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 
-error Tombola__NotEnoughETHEntered(string message);
-error Tombola__TransferFailed(string message);
-error Tombola__Status(string message);
-
-//error Tombola
-
 contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
     //Type
     enum TombolaStatus {
@@ -37,6 +31,12 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
     event LatestPlayers();
     event winnerPicked(address indexed winner);
 
+    //Errors
+    error Tombola__NotEnoughETHEntered(string message);
+    error Tombola__TransferFailed(string message);
+    error Tombola__Status(string message);
+    error Tombola__UpKeepNotRequired(string message);
+
     constructor(
         address vrfCoordinatorV2,
         uint256 entranceFee,
@@ -55,6 +55,24 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
         i_interval = interval;
     }
 
+    function performUpkeep(bytes calldata /*perfomeData*/) external override {
+        (bool upkeepNeeded, ) = checkUpkeep(bytes(""));
+        if (!upkeepNeeded) {
+            revert Tombola__UpKeepNotRequired("Upkeep conditions not met");
+        }
+
+        s_tombolaStatus = TombolaStatus.CLOSED;
+        uint256 request_Id = i_vrfCoordinator.requestRandomWords(
+            i_gaslane,
+            i_subId,
+            REQUEST_CONFIRMATIONS,
+            i_callbackGasLimit,
+            NUMWORDS
+        );
+
+        emit RequestedRaffleWinner(request_Id);
+    }
+
     function payLottery() public payable {
         if (msg.value < i_entranceFee) {
             revert Tombola__NotEnoughETHEntered(
@@ -68,20 +86,6 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
         emit RaffleEnter(msg.sender);
     }
 
-    function fulfillRandomWords(
-        uint256 /*requestId*/,
-        uint256[] memory randomWords
-    ) internal override {
-        uint256 indexOfWinner = randomWords[0] % s_players.length;
-        address payable latestWinner = s_players[indexOfWinner];
-        s_latestWinner = latestWinner;
-        s_tombolaStatus = TombolaStatus.OPEN;
-        s_players = new address payable[](0);
-        bool sendSuccess = payable(latestWinner).send(address(this).balance);
-        if (!sendSuccess) revert Tombola__TransferFailed("Transfer failed");
-        emit winnerPicked(latestWinner);
-    }
-
     /**
      * @dev This function is invoked by Chainlink Keeper nodes to determine if upkeep is needed, and it returns true when the following conditions are met:
      *1. The subscription must be true.
@@ -91,12 +95,12 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
      *5. The lottery should be in ""Open" state.
      */
     function checkUpkeep(
-        bytes calldata /*checkData*/
+        bytes memory /*checkData*/
     )
-        external
+        public
         view
         override
-        returns (bool upkeepNeeded, bytes memory performData)
+        returns (bool upkeepNeeded, bytes memory /*performData*/)
     {
         bool isOpen = (s_tombolaStatus == TombolaStatus.OPEN);
         bool hasTimePassed = ((block.timestamp - s_lastTimeStamp) > i_interval);
@@ -105,24 +109,26 @@ contract Tombola is VRFConsumerBaseV2, AutomationCompatibleInterface {
         upkeepNeeded = (isOpen && hasTimePassed && hasPlayers && hasBalance);
     }
 
-    function requestRandomWinner() external {
-        s_tombolaStatus = TombolaStatus.CLOSED;
-        uint256 request_Id = i_vrfCoordinator.requestRandomWords(
-            i_gaslane,
-            i_subId,
-            REQUEST_CONFIRMATIONS,
-            i_callbackGasLimit,
-            NUMWORDS
-        );
-
-        emit RequestedRaffleWinner(request_Id);
-    }
-
     function showLatestWInner() public view returns (address) {
         return s_latestWinner;
     }
 
     function showLatestPlayers() public {
         emit LatestPlayers();
+    }
+
+    function fulfillRandomWords(
+        uint256 /*requestId*/,
+        uint256[] memory randomWords
+    ) internal override {
+        uint256 indexOfWinner = randomWords[0] % s_players.length;
+        address payable latestWinner = s_players[indexOfWinner];
+        s_latestWinner = latestWinner;
+        s_tombolaStatus = TombolaStatus.OPEN;
+        s_players = new address payable[](0);
+        s_lastTimeStamp = block.timestamp;
+        bool sendSuccess = payable(latestWinner).send(address(this).balance);
+        if (!sendSuccess) revert Tombola__TransferFailed("Transfer failed");
+        emit winnerPicked(latestWinner);
     }
 }
